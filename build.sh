@@ -1,5 +1,5 @@
 set -e
-export PATH=/Users/eiz/code/go_src/go/bin/go:$PATH
+export PATH=/Users/eiz/code/go_src/go/bin:$PATH
 export GOOS=linux GOARCH=amd64
 GOARCH=386 go tool asm -I ~/code/go_src/go/src/runtime wut.s
 go tool asm -I ~/code/go_src/go/src/runtime wut64.s

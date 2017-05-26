@@ -89,8 +89,21 @@ index d8a52da..28fb7d5 100644
 +
 +	ALIGN4K = 2048
  )
+diff --git a/src/cmd/link/internal/amd64/asm.go b/src/cmd/link/internal/amd64/asm.go
+index 03bd594..e20aad9 100644
+--- a/src/cmd/link/internal/amd64/asm.go
++++ b/src/cmd/link/internal/amd64/asm.go
+@@ -767,7 +767,7 @@ func asmb(ctxt *ld.Link) {
+ 					ctxt.Logf("%5.2f dwarf\n", ld.Cputime())
+ 				}
+ 
+-				if ld.Linkmode == ld.LinkExternal {
++				if ld.Linkmode == ld.LinkExternal || *ld.FlagEmitReloc {
+ 					ld.Elfemitreloc(ctxt)
+ 				}
+ 			}
 diff --git a/src/cmd/link/internal/ld/data.go b/src/cmd/link/internal/ld/data.go
-index d724c59..4bf8e08 100644
+index d724c59..867ea0c 100644
 --- a/src/cmd/link/internal/ld/data.go
 +++ b/src/cmd/link/internal/ld/data.go
 @@ -32,9 +32,11 @@
@@ -105,7 +118,241 @@ index d724c59..4bf8e08 100644
  	"fmt"
  	"log"
  	"os"
-@@ -2016,6 +2018,69 @@ func (ctxt *Link) textbuildid() {
+@@ -453,18 +455,21 @@ func relocsym(ctxt *Link, s *Symbol) {
+ 		case objabi.R_TLS_LE:
+ 			isAndroidX86 := objabi.GOOS == "android" && (SysArch.InFamily(sys.AMD64, sys.I386))
+ 
+-			if Linkmode == LinkExternal && Iself && !isAndroidX86 {
++			if (Linkmode == LinkExternal || *FlagEmitReloc) && Iself && !isAndroidX86 {
+ 				r.Done = 0
+ 				if r.Sym == nil {
+ 					r.Sym = ctxt.Tlsg
+ 				}
+ 				r.Xsym = r.Sym
+ 				r.Xadd = r.Add
+-				o = 0
+-				if SysArch.Family != sys.AMD64 {
+-					o = r.Add
++				if !*FlagEmitReloc {
++					o = 0
++					if SysArch.Family != sys.AMD64 {
++						o = r.Add
++					}
++
++					break
+ 				}
+-				break
+ 			}
+ 
+ 			if Iself && SysArch.Family == sys.ARM {
+@@ -487,18 +492,21 @@ func relocsym(ctxt *Link, s *Symbol) {
+ 		case objabi.R_TLS_IE:
+ 			isAndroidX86 := objabi.GOOS == "android" && (SysArch.InFamily(sys.AMD64, sys.I386))
+ 
+-			if Linkmode == LinkExternal && Iself && !isAndroidX86 {
++			if (Linkmode == LinkExternal || *FlagEmitReloc) && Iself && !isAndroidX86 {
+ 				r.Done = 0
+ 				if r.Sym == nil {
+ 					r.Sym = ctxt.Tlsg
+ 				}
+ 				r.Xsym = r.Sym
+ 				r.Xadd = r.Add
+-				o = 0
+-				if SysArch.Family != sys.AMD64 {
+-					o = r.Add
++
++				if !*FlagEmitReloc {
++					o = 0
++					if SysArch.Family != sys.AMD64 {
++						o = r.Add
++					}
++					break
+ 				}
+-				break
+ 			}
+ 			if Buildmode == BuildmodePIE && Iself {
+ 				// We are linking the final executable, so we
+@@ -516,7 +524,7 @@ func relocsym(ctxt *Link, s *Symbol) {
+ 			}
+ 
+ 		case objabi.R_ADDR:
+-			if Linkmode == LinkExternal && r.Sym.Type != SCONST {
++			if (Linkmode == LinkExternal || *FlagEmitReloc) && r.Sym.Type != SCONST {
+ 				r.Done = 0
+ 
+ 				// set up addend for eventual relocation via outer symbol.
+@@ -533,32 +541,34 @@ func relocsym(ctxt *Link, s *Symbol) {
+ 				}
+ 				r.Xsym = rs
+ 
+-				o = r.Xadd
+-				if Iself {
+-					if SysArch.Family == sys.AMD64 {
+-						o = 0
+-					}
+-				} else if Headtype == objabi.Hdarwin {
+-					// ld64 for arm64 has a bug where if the address pointed to by o exists in the
+-					// symbol table (dynid >= 0), or is inside a symbol that exists in the symbol
+-					// table, then it will add o twice into the relocated value.
+-					// The workaround is that on arm64 don't ever add symaddr to o and always use
+-					// extern relocation by requiring rs->dynid >= 0.
+-					if rs.Type != SHOSTOBJ {
+-						if SysArch.Family == sys.ARM64 && rs.Dynid < 0 {
+-							Errorf(s, "R_ADDR reloc to %s+%d is not supported on darwin/arm64", rs.Name, o)
++				if !*FlagEmitReloc {
++					o = r.Xadd
++					if Iself {
++						if SysArch.Family == sys.AMD64 {
++							o = 0
+ 						}
+-						if SysArch.Family != sys.ARM64 {
+-							o += Symaddr(rs)
++					} else if Headtype == objabi.Hdarwin {
++						// ld64 for arm64 has a bug where if the address pointed to by o exists in the
++						// symbol table (dynid >= 0), or is inside a symbol that exists in the symbol
++						// table, then it will add o twice into the relocated value.
++						// The workaround is that on arm64 don't ever add symaddr to o and always use
++						// extern relocation by requiring rs->dynid >= 0.
++						if rs.Type != SHOSTOBJ {
++							if SysArch.Family == sys.ARM64 && rs.Dynid < 0 {
++								Errorf(s, "R_ADDR reloc to %s+%d is not supported on darwin/arm64", rs.Name, o)
++							}
++							if SysArch.Family != sys.ARM64 {
++								o += Symaddr(rs)
++							}
+ 						}
++					} else if Headtype == objabi.Hwindows {
++						// nothing to do
++					} else {
++						Errorf(s, "unhandled pcrel relocation to %s on %v", rs.Name, Headtype)
+ 					}
+-				} else if Headtype == objabi.Hwindows {
+-					// nothing to do
+-				} else {
+-					Errorf(s, "unhandled pcrel relocation to %s on %v", rs.Name, Headtype)
+-				}
+ 
+-				break
++					break
++				}
+ 			}
+ 
+ 			o = Symaddr(r.Sym) + r.Add
+@@ -577,7 +587,7 @@ func relocsym(ctxt *Link, s *Symbol) {
+ 			if r.Sym.Sect == nil {
+ 				Errorf(s, "missing DWARF section for relocation target %s", r.Sym.Name)
+ 			}
+-			if Linkmode == LinkExternal {
++			if Linkmode == LinkExternal || *FlagEmitReloc {
+ 				r.Done = 0
+ 				// PE code emits IMAGE_REL_I386_SECREL and IMAGE_REL_AMD64_SECREL
+ 				// for R_DWARFREF relocations, while R_ADDR is replaced with
+@@ -590,12 +600,15 @@ func relocsym(ctxt *Link, s *Symbol) {
+ 
+ 				r.Xsym = ctxt.Syms.ROLookup(r.Sym.Sect.Name, 0)
+ 				r.Xadd = r.Add + Symaddr(r.Sym) - int64(r.Sym.Sect.Vaddr)
+-				o = r.Xadd
+-				rs = r.Xsym
+-				if Iself && SysArch.Family == sys.AMD64 {
+-					o = 0
++
++				if !*FlagEmitReloc {
++					o = r.Xadd
++					rs = r.Xsym
++					if Iself && SysArch.Family == sys.AMD64 {
++						o = 0
++					}
++					break
+ 				}
+-				break
+ 			}
+ 			o = Symaddr(r.Sym) + r.Add - int64(r.Sym.Sect.Vaddr)
+ 
+@@ -628,7 +641,7 @@ func relocsym(ctxt *Link, s *Symbol) {
+ 			}
+ 			fallthrough
+ 		case objabi.R_CALL, objabi.R_PCREL:
+-			if Linkmode == LinkExternal && r.Sym != nil && r.Sym.Type != SCONST && (r.Sym.Sect != s.Sect || r.Type == objabi.R_GOTPCREL) {
++			if (Linkmode == LinkExternal || *FlagEmitReloc) && r.Sym != nil && r.Sym.Type != SCONST && (r.Sym.Sect != s.Sect || r.Type == objabi.R_GOTPCREL) {
+ 				r.Done = 0
+ 
+ 				// set up addend for eventual relocation via outer symbol.
+@@ -646,32 +659,34 @@ func relocsym(ctxt *Link, s *Symbol) {
+ 				}
+ 				r.Xsym = rs
+ 
+-				o = r.Xadd
+-				if Iself {
+-					if SysArch.Family == sys.AMD64 {
+-						o = 0
+-					}
+-				} else if Headtype == objabi.Hdarwin {
+-					if r.Type == objabi.R_CALL {
+-						if rs.Type != SHOSTOBJ {
+-							o += int64(uint64(Symaddr(rs)) - rs.Sect.Vaddr)
++				if !*FlagEmitReloc {
++					o = r.Xadd
++					if Iself {
++						if SysArch.Family == sys.AMD64 {
++							o = 0
+ 						}
+-						o -= int64(r.Off) // relative to section offset, not symbol
+-					} else if SysArch.Family == sys.ARM {
+-						// see ../arm/asm.go:/machoreloc1
+-						o += Symaddr(rs) - int64(s.Value) - int64(r.Off)
+-					} else {
++					} else if Headtype == objabi.Hdarwin {
++						if r.Type == objabi.R_CALL {
++							if rs.Type != SHOSTOBJ {
++								o += int64(uint64(Symaddr(rs)) - rs.Sect.Vaddr)
++							}
++							o -= int64(r.Off) // relative to section offset, not symbol
++						} else if SysArch.Family == sys.ARM {
++							// see ../arm/asm.go:/machoreloc1
++							o += Symaddr(rs) - int64(s.Value) - int64(r.Off)
++						} else {
++							o += int64(r.Siz)
++						}
++					} else if Headtype == objabi.Hwindows && SysArch.Family == sys.AMD64 { // only amd64 needs PCREL
++						// PE/COFF's PC32 relocation uses the address after the relocated
++						// bytes as the base. Compensate by skewing the addend.
+ 						o += int64(r.Siz)
++					} else {
++						Errorf(s, "unhandled pcrel relocation to %s on %v", rs.Name, Headtype)
+ 					}
+-				} else if Headtype == objabi.Hwindows && SysArch.Family == sys.AMD64 { // only amd64 needs PCREL
+-					// PE/COFF's PC32 relocation uses the address after the relocated
+-					// bytes as the base. Compensate by skewing the addend.
+-					o += int64(r.Siz)
+-				} else {
+-					Errorf(s, "unhandled pcrel relocation to %s on %v", rs.Name, Headtype)
+-				}
+ 
+-				break
++					break
++				}
+ 			}
+ 
+ 			o = 0
+@@ -993,7 +1008,7 @@ func Datblk(ctxt *Link, addr int64, size int64) {
+ 		}
+ 		ctxt.Logf("\n")
+ 
+-		if Linkmode != LinkExternal {
++		if Linkmode != LinkExternal && !*FlagEmitReloc {
+ 			continue
+ 		}
+ 		for _, r := range sym.R {
+@@ -1569,7 +1584,7 @@ func (ctxt *Link) dodata() {
+ 
+ 	if len(data[STLSBSS]) > 0 {
+ 		var sect *Section
+-		if Iself && (Linkmode == LinkExternal || !*FlagD) {
++		if Iself && (Linkmode == LinkExternal || !*FlagD || *FlagEmitReloc) {
+ 			sect = addsection(&Segdata, ".tbss", 06)
+ 			sect.Align = int32(SysArch.PtrSize)
+ 			sect.Vaddr = 0
+@@ -2016,6 +2031,69 @@ func (ctxt *Link) textbuildid() {
  	ctxt.Textp[0] = sym
  }
  
@@ -175,6 +422,95 @@ index d724c59..4bf8e08 100644
  // assign addresses to text
  func (ctxt *Link) textaddress() {
  	addsection(&Segtext, ".text", 05)
+diff --git a/src/cmd/link/internal/ld/dwarf.go b/src/cmd/link/internal/ld/dwarf.go
+index a0c5565..324b720 100644
+--- a/src/cmd/link/internal/ld/dwarf.go
++++ b/src/cmd/link/internal/ld/dwarf.go
+@@ -1588,7 +1588,7 @@ func dwarfaddshstrings(ctxt *Link, shstrtab *Symbol) {
+ 	Addstring(shstrtab, ".debug_pubnames")
+ 	Addstring(shstrtab, ".debug_pubtypes")
+ 	Addstring(shstrtab, ".debug_gdb_scripts")
+-	if Linkmode == LinkExternal {
++	if Linkmode == LinkExternal || *FlagEmitReloc {
+ 		Addstring(shstrtab, elfRelType+".debug_info")
+ 		Addstring(shstrtab, elfRelType+".debug_aranges")
+ 		Addstring(shstrtab, elfRelType+".debug_line")
+@@ -1604,7 +1604,7 @@ func dwarfaddelfsectionsyms(ctxt *Link) {
+ 	if *FlagW { // disable dwarf
+ 		return
+ 	}
+-	if Linkmode != LinkExternal {
++	if Linkmode != LinkExternal && !*FlagEmitReloc {
+ 		return
+ 	}
+ 	sym := ctxt.Syms.Lookup(".debug_info", 0)
+diff --git a/src/cmd/link/internal/ld/elf.go b/src/cmd/link/internal/ld/elf.go
+index 0fc947f..bfe95a2 100644
+--- a/src/cmd/link/internal/ld/elf.go
++++ b/src/cmd/link/internal/ld/elf.go
+@@ -1804,6 +1804,7 @@ func elfrelocsect(ctxt *Link, sect *Section, syms []*Symbol) {
+ 		}
+ 		for ri := 0; ri < len(sym.R); ri++ {
+ 			r := &sym.R[ri]
++
+ 			if r.Done != 0 {
+ 				continue
+ 			}
+@@ -1897,7 +1898,7 @@ func (ctxt *Link) doelf() {
+ 	// generate .tbss section for dynamic internal linker or external
+ 	// linking, so that various binutils could correctly calculate
+ 	// PT_TLS size. See https://golang.org/issue/5200.
+-	if !*FlagD || Linkmode == LinkExternal {
++	if !*FlagD || Linkmode == LinkExternal || *FlagEmitReloc {
+ 		Addstring(shstrtab, ".tbss")
+ 	}
+ 	if Headtype == objabi.Hnetbsd {
+@@ -1925,8 +1926,10 @@ func (ctxt *Link) doelf() {
+ 	Addstring(shstrtab, relro_prefix+".gosymtab")
+ 	Addstring(shstrtab, relro_prefix+".gopclntab")
+ 
+-	if Linkmode == LinkExternal {
+-		*FlagD = true
++	if Linkmode == LinkExternal || *FlagEmitReloc {
++		if !*FlagEmitReloc {
++			*FlagD = true
++		}
+ 
+ 		Addstring(shstrtab, elfRelType+".text")
+ 		Addstring(shstrtab, elfRelType+".rodata")
+@@ -2582,7 +2585,7 @@ elfobj:
+ 		elfshbits(sect)
+ 	}
+ 
+-	if Linkmode == LinkExternal {
++	if Linkmode == LinkExternal || *FlagEmitReloc {
+ 		for _, sect := range Segtext.Sections {
+ 			elfshreloc(sect)
+ 		}
+diff --git a/src/cmd/link/internal/ld/lib.go b/src/cmd/link/internal/ld/lib.go
+index 43c7d73..20c7fe6 100644
+--- a/src/cmd/link/internal/ld/lib.go
++++ b/src/cmd/link/internal/ld/lib.go
+@@ -1645,6 +1645,10 @@ func (ctxt *Link) dostkcheck() {
+ 
+ 	ch.limit = objabi.StackLimit - callsize(ctxt)
+ 
++	if *flagMultiboot {
++		ch.limit = 4096 - callsize(ctxt)
++	}
++
+ 	// Check every function, but do the nosplit functions in a first pass,
+ 	// to make the printed failure chains as short as possible.
+ 	for _, s := range ctxt.Textp {
+@@ -1967,7 +1971,7 @@ func genasmsym(ctxt *Link, put func(*Link, *Symbol, string, SymbolType, int64, *
+ 			put(ctxt, s, s.Extname, UndefinedSym, 0, nil)
+ 
+ 		case STLSBSS:
+-			if Linkmode == LinkExternal {
++			if Linkmode == LinkExternal || *FlagEmitReloc {
+ 				put(ctxt, s, s.Name, TLSSym, Symaddr(s), s.Gotype)
+ 			}
+ 		}
 diff --git a/src/cmd/link/internal/ld/link.go b/src/cmd/link/internal/ld/link.go
 index 089b4d3..7ba0b29 100644
 --- a/src/cmd/link/internal/ld/link.go
@@ -196,18 +532,19 @@ index 089b4d3..7ba0b29 100644
  func (a Attribute) CgoExport() bool {
  	return a.CgoExportDynamic() || a.CgoExportStatic()
 diff --git a/src/cmd/link/internal/ld/main.go b/src/cmd/link/internal/ld/main.go
-index 0078064..92715d4 100644
+index 0078064..0bebaa8 100644
 --- a/src/cmd/link/internal/ld/main.go
 +++ b/src/cmd/link/internal/ld/main.go
-@@ -87,6 +87,7 @@ var (
+@@ -87,6 +87,8 @@ var (
  	Flag8           bool // use 64-bit addresses in symbol table
  	flagInterpreter = flag.String("I", "", "use `linker` as ELF dynamic linker")
  	FlagDebugTramp  = flag.Int("debugtramp", 0, "debug trampolines")
 +	flagMultiboot   = flag.Bool("multiboot", false, "generate multiboot header")
++	FlagEmitReloc   = flag.Bool("emit-reloc", false, "always emit relocations")
  
  	flagHeadtype    = flag.String("H", "", "set header `type`")
  	FlagRound       = flag.Int("R", -1, "set address rounding `quantum`")
-@@ -210,6 +211,7 @@ func Main() {
+@@ -210,6 +212,7 @@ func Main() {
  	ctxt.addexport()
  	Thearch.Gentext(ctxt) // trampolines, call stubs, etc.
  	ctxt.textbuildid()
@@ -215,7 +552,7 @@ index 0078064..92715d4 100644
  	ctxt.textaddress()
  	ctxt.pclntab()
  	ctxt.findfunctab()
-@@ -218,6 +220,7 @@ func Main() {
+@@ -218,6 +221,7 @@ func Main() {
  	ctxt.dodata()
  	ctxt.address()
  	ctxt.reloc()
